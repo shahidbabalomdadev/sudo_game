@@ -10,23 +10,18 @@ const app = next({ dev, hostname, port });
 const handler = app.getRequestHandler();
 
 const matches = new Map();
-// Separate waiting queues per mode: "6" or "9"
-const waitingQueues = { "6": [], "9": [] };
+// Separate waiting queues per mode: "4", "6", "9", "9expert"
+const waitingQueues = { "4": [], "6": [], "9": [], "9expert": [] };
 
-// ─── 6×6 Sudoku Generator ────────────────────────────────────────────────────
-function generate6x6() {
-  // 6×6 board: 2-row × 3-col boxes, digits 1–6
-  const SIZE = 6;
-  const BOX_ROWS = 2;
-  const BOX_COLS = 3;
-
+// ─── Generic Sudoku Generator ──────────────────────────────────────────────────
+function generateCustom(size, boxRows, boxCols, clues) {
   function isValid(board, row, col, num) {
-    for (let c = 0; c < SIZE; c++) if (board[row][c] === num) return false;
-    for (let r = 0; r < SIZE; r++) if (board[r][col] === num) return false;
-    const br = Math.floor(row / BOX_ROWS) * BOX_ROWS;
-    const bc = Math.floor(col / BOX_COLS) * BOX_COLS;
-    for (let r = br; r < br + BOX_ROWS; r++)
-      for (let c = bc; c < bc + BOX_COLS; c++)
+    for (let c = 0; c < size; c++) if (board[row][c] === num) return false;
+    for (let r = 0; r < size; r++) if (board[r][col] === num) return false;
+    const br = Math.floor(row / boxRows) * boxRows;
+    const bc = Math.floor(col / boxCols) * boxCols;
+    for (let r = br; r < br + boxRows; r++)
+      for (let c = bc; c < bc + boxCols; c++)
         if (board[r][c] === num) return false;
     return true;
   }
@@ -40,10 +35,10 @@ function generate6x6() {
   }
 
   function solve(board) {
-    for (let r = 0; r < SIZE; r++) {
-      for (let c = 0; c < SIZE; c++) {
+    for (let r = 0; r < size; r++) {
+      for (let c = 0; c < size; c++) {
         if (board[r][c] === 0) {
-          const nums = shuffle([1, 2, 3, 4, 5, 6]);
+          const nums = shuffle(Array.from({ length: size }, (_, i) => i + 1));
           for (const n of nums) {
             if (isValid(board, r, c, n)) {
               board[r][c] = n;
@@ -58,20 +53,18 @@ function generate6x6() {
     return true;
   }
 
-  const board = Array.from({ length: SIZE }, () => Array(SIZE).fill(0));
+  const board = Array.from({ length: size }, () => Array(size).fill(0));
   solve(board);
 
-  // Flatten solution to a string
   const solution = board.flat().join("");
-
-  // Remove cells to create the puzzle (~18 clues remain out of 36)
   const puzzleBoard = board.map(r => [...r]);
-  const positions = shuffle([...Array(SIZE * SIZE).keys()]);
+  const positions = shuffle([...Array(size * size).keys()]);
   let removed = 0;
+  const targetRemove = size * size - clues;
   for (const pos of positions) {
-    if (removed >= 18) break; // remove 18 cells → 18 clues remain
-    const r = Math.floor(pos / SIZE);
-    const c = pos % SIZE;
+    if (removed >= targetRemove) break;
+    const r = Math.floor(pos / size);
+    const c = pos % size;
     puzzleBoard[r][c] = 0;
     removed++;
   }
@@ -82,10 +75,13 @@ function generate6x6() {
 
 // ─── Puzzle factory ───────────────────────────────────────────────────────────
 function generatePuzzle(mode) {
-  if (mode === "6") {
-    return generate6x6();
+  if (mode === "4") return generateCustom(4, 2, 2, 8);
+  if (mode === "6") return generateCustom(6, 2, 3, 18);
+  if (mode === "9expert") {
+    const s = getSudoku("expert");
+    return { puzzle: s.puzzle, solution: s.solution };
   }
-  // 9×9 via sudoku-gen
+  // Default 9x9 Medium
   const s = getSudoku("medium");
   return { puzzle: s.puzzle, solution: s.solution };
 }
@@ -129,7 +125,8 @@ app.prepare().then(() => {
     broadcastLobbyStats();
 
     socket.on("findMatch", ({ mode } = {}) => {
-      const gridMode = mode === "6" ? "6" : "9"; // default 9
+      // Validate mode, default to 9
+      const gridMode = ["4", "6", "9", "9expert"].includes(mode) ? mode : "9";
       console.log(socket.id, "finding match mode:", gridMode);
 
       const queue = waitingQueues[gridMode];

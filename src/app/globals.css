@@ -224,6 +224,29 @@ main {
   padding: 3px 10px;
 }
 
+.mode-card.active .mode-card-icon.gold {
+  color: #fbbf24;
+  filter: drop-shadow(0 0 8px rgba(251, 191, 36, 0.4));
+}
+
+.mode-card-badge.gold {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.mode-card-icon-small {
+  font-size: 1.2rem;
+  font-weight: 900;
+  color: #64748b;
+  margin-bottom: 8px;
+}
+
+.mode-card.active .mode-card-icon-small {
+  color: var(--accent);
+}
+
+
 /* ── Lobby Stats ─────────────────────────────────────────────────────── */
 .lobby-stats {
   display: flex;
@@ -683,6 +706,33 @@ main {
 
 
 
+/* ── Grid – 4×4 ─────────────────────────────────────────────────────── */
+.sudoku-grid.grid-4 {
+  grid-template-columns: repeat(4, 1fr);
+  grid-template-rows: repeat(4, 1fr);
+  max-width: 300px;
+  font-size: 1.8rem;
+}
+
+/* 4×4 box borders: 2x2 boxes */
+.grid-4 .cell:nth-child(2n) {
+  border-right: 2px solid #475569;
+}
+
+.grid-4 .cell:nth-child(4n) {
+  border-right: none;
+}
+
+.grid-4 .cell:nth-child(n+5):nth-child(-n+8) {
+  border-bottom: 2px solid #475569;
+}
+
+/* Cancel inheritance */
+.grid-4 .cell:nth-child(9n),
+.grid-4 .cell:nth-child(3n) {
+  border-right: unset;
+}
+
 /* ── Grid – 6×6 ─────────────────────────────────────────────────────── */
 .sudoku-grid.grid-6 {
   grid-template-columns: repeat(6, 1fr);
@@ -712,13 +762,23 @@ main {
 /* ── Numpad ──────────────────────────────────────────────────────────── */
 .numpad {
   display: grid;
-  grid-template-columns: repeat(9, 1fr);
-  gap: 6px;
+  gap: 8px;
   width: 100%;
+  max-width: 450px;
+}
+
+.numpad.numpad-4 {
+  grid-template-columns: repeat(4, 1fr);
+  max-width: 250px;
 }
 
 .numpad.numpad-6 {
   grid-template-columns: repeat(6, 1fr);
+  max-width: 350px;
+}
+
+.numpad:not(.numpad-4):not(.numpad-6) {
+  grid-template-columns: repeat(9, 1fr);
 }
 
 .numpad-btn {

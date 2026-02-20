@@ -6,7 +6,7 @@ import {
   AlertTriangle, Grid3X3, LayoutGrid
 } from "lucide-react";
 
-type GridMode = "6" | "9";
+type GridMode = "4" | "6" | "9" | "9expert";
 
 export default function Home() {
   const [socket, setSocket] = useState<Socket | null>(null);
@@ -70,7 +70,12 @@ export default function Home() {
     });
 
     s.on("matchFound", (data: { matchId: string; puzzle: string; mode: GridMode }) => {
-      const gs = parseInt(data.mode) as 6 | 9;
+      // Map mode string to numeric size for the UI
+      let gs: number = 9;
+      if (data.mode === "4") gs = 4;
+      if (data.mode === "6") gs = 6;
+      if (data.mode === "9" || data.mode === "9expert") gs = 9;
+
       activeGridSizeRef.current = gs;
       setActiveGridSize(gs);
       setMatchId(data.matchId);
@@ -174,10 +179,12 @@ export default function Home() {
   const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 
   const isWinner = winner === socket?.id;
-  const numpadNums = activeGridSize === 6 ? ["1", "2", "3", "4", "5", "6"] : ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
-  const gridClass = activeGridSize === 6 ? "sudoku-grid grid-6" : "sudoku-grid";
-  const numpadClass = activeGridSize === 6 ? "numpad numpad-6" : "numpad";
-  const eraseSpan = activeGridSize === 6 ? "col-span-6" : "col-span-9";
+  const numpadNums = activeGridSize === 4 ? ["1", "2", "3", "4"] : activeGridSize === 6 ? ["1", "2", "3", "4", "5", "6"] : ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
+  const gridClass = activeGridSize === 4 ? "sudoku-grid grid-4" : activeGridSize === 6 ? "sudoku-grid grid-6" : "sudoku-grid";
+  const numpadClass = activeGridSize === 4 ? "numpad numpad-4" : activeGridSize === 6 ? "numpad numpad-6" : "numpad";
+  const eraseSpan = activeGridSize === 4 ? "col-span-4" : activeGridSize === 6 ? "col-span-6" : "col-span-9";
+
+  const findMatchDisplay = gridMode === "9expert" ? "9×9 Expert" : `${gridMode}×${gridMode}`;
 
   const myPct = totalEmpty ? Math.min(100, Math.max(0, (myFilled / totalEmpty) * 100)) : 0;
   const oppPct = totalEmpty ? Math.min(100, Math.max(0, (opponentFilled / totalEmpty) * 100)) : 0;
@@ -200,6 +207,17 @@ export default function Home() {
             <p className="mode-label">Choose Board Size</p>
             <div className="mode-picker">
               <button
+                id="mode-4x4"
+                className={`mode-card ${gridMode === "4" ? "active" : ""}`}
+                onClick={() => setGridMode("4")}
+              >
+                <div className="mode-card-icon-small">4×4</div>
+                <div className="mode-card-title">4 × 4</div>
+                <div className="mode-card-sub">Super Fast</div>
+                <div className="mode-card-badge">Kids</div>
+              </button>
+
+              <button
                 id="mode-6x6"
                 className={`mode-card ${gridMode === "6" ? "active" : ""}`}
                 onClick={() => setGridMode("6")}
@@ -217,15 +235,26 @@ export default function Home() {
               >
                 <Grid3X3 size={34} className="mode-card-icon" />
                 <div className="mode-card-title">9 × 9</div>
-                <div className="mode-card-sub">Classic Challenge</div>
+                <div className="mode-card-sub">Classic Fun</div>
                 <div className="mode-card-badge">Standard</div>
+              </button>
+
+              <button
+                id="mode-9expert"
+                className={`mode-card ${gridMode === "9expert" ? "active" : ""}`}
+                onClick={() => setGridMode("9expert")}
+              >
+                <Trophy size={34} className="mode-card-icon gold" />
+                <div className="mode-card-title">Pro</div>
+                <div className="mode-card-sub">Pure Chaos</div>
+                <div className="mode-card-badge gold">Master</div>
               </button>
             </div>
           </div>
 
           <button id="find-match-btn" className="btn" onClick={findMatch}>
             <Swords size={20} />
-            Find {gridMode}×{gridMode} Match
+            Find {findMatchDisplay} Match
           </button>
 
           {/* Live Lobby Stats */}
