@@ -1,7 +1,10 @@
 "use client";
 import { useEffect, useState, useCallback, useRef } from "react";
 import { io, Socket } from "socket.io-client";
-import { Trophy, Swords, XCircle, RotateCcw, AlertTriangle, Grid3X3, LayoutGrid } from "lucide-react";
+import {
+  Trophy, Swords, XCircle, RotateCcw,
+  AlertTriangle, Grid3X3, LayoutGrid
+} from "lucide-react";
 
 type GridMode = "6" | "9";
 
@@ -13,7 +16,7 @@ export default function Home() {
   const [puzzle, setPuzzle] = useState<string[]>(Array(81).fill("-"));
   const [initialPuzzle, setInitialPuzzle] = useState<string[]>(Array(81).fill("-"));
   const [selectedCell, setSelectedCell] = useState<number | null>(null);
-  const [activeGridSize, setActiveGridSize] = useState<number>(9); // actual size during a match
+  const [activeGridSize, setActiveGridSize] = useState<number>(9);
 
   // Progress
   const [myFilled, setMyFilled] = useState(0);
@@ -27,66 +30,83 @@ export default function Home() {
   const totalEmptyRef = useRef(0);
   const activeGridSizeRef = useRef(9);
 
+  // Timer
+  const [elapsed, setElapsed] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const startTimer = () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    setElapsed(0);
+    timerRef.current = setInterval(() => setElapsed(s => s + 1), 1000);
+  };
+
+  const stopTimer = () => {
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+  };
+
+  // Clean up on unmount
+  useEffect(() => () => stopTimer(), []);
+
+  /* ── Socket setup (once) ── */
   useEffect(() => {
-    const newSocket = io();
-    setSocket(newSocket);
+    const s = io();
+    setSocket(s);
 
-    newSocket.on("waiting", () => {
-      setGameState("waiting");
-    });
+    s.on("waiting", () => setGameState("waiting"));
 
-    newSocket.on("matchFound", (data: { matchId: string; puzzle: string; mode: GridMode; player: "p1" | "p2" }) => {
+    s.on("matchFound", (data: { matchId: string; puzzle: string; mode: GridMode }) => {
       const gs = parseInt(data.mode) as 6 | 9;
       activeGridSizeRef.current = gs;
       setActiveGridSize(gs);
       setMatchId(data.matchId);
-      const puzzleArr = data.puzzle.split("");
-      setPuzzle([...puzzleArr]);
-      setInitialPuzzle([...puzzleArr]);
-      const emptyCount = puzzleArr.filter((c) => c === "-").length;
-      totalEmptyRef.current = emptyCount;
-      setTotalEmpty(emptyCount);
+      const arr = data.puzzle.split("");
+      setPuzzle([...arr]);
+      setInitialPuzzle([...arr]);
+      const empty = arr.filter(c => c === "-").length;
+      totalEmptyRef.current = empty;
+      setTotalEmpty(empty);
       setMyFilled(0);
       setOpponentFilled(0);
       setGameState("playing");
+      startTimer();
       setWinner(null);
       setSelectedCell(null);
     });
 
-    newSocket.on("playerProgress", (data: { playerId: string; filled: number; initialFilled: number }) => {
-      if (data.playerId !== newSocket.id) {
-        // opponent's filled cells minus the pre-filled ones = cells opponent has answered
+    s.on("playerProgress", (data: { playerId: string; filled: number; initialFilled: number }) => {
+      if (data.playerId !== s.id) {
         setOpponentFilled(data.filled - data.initialFilled);
       }
     });
 
-    newSocket.on("gameOver", (data: { winner: string; reason: string }) => {
+    s.on("gameOver", (data: { winner: string; reason: string }) => {
+      stopTimer();
       setWinner(data.winner);
       setWinReason(data.reason);
       setGameState("finished");
     });
 
-    return () => {
-      newSocket.disconnect();
-    };
+    return () => { s.disconnect(); };
   }, []);
 
+  /* ── Cell click ── */
   const handleCellClick = (index: number) => {
     if (gameState !== "playing" || initialPuzzle[index] !== "-") return;
     setSelectedCell(index);
   };
 
+  /* ── Number / erase input ── */
   const handleInput = useCallback((val: string) => {
     if (selectedCell === null || gameState !== "playing") return;
-    if (initialPuzzle[selectedCell] !== "-" || puzzle[selectedCell] === val) return;
+    if (initialPuzzle[selectedCell] !== "-") return;
+    if (puzzle[selectedCell] === val) return;
 
-    const newPuzzle = [...puzzle];
-    newPuzzle[selectedCell] = val;
-    setPuzzle(newPuzzle);
+    const next = [...puzzle];
+    next[selectedCell] = val;
+    setPuzzle(next);
 
-    const filledCount = newPuzzle.filter(c => c !== "-").length;
     const initialFilled = initialPuzzle.filter(c => c !== "-").length;
-    setMyFilled(filledCount - initialFilled);
+    setMyFilled(next.filter(c => c !== "-").length - initialFilled);
 
     socket?.emit("makeMove", {
       matchId,
@@ -95,79 +115,67 @@ export default function Home() {
     });
   }, [selectedCell, gameState, initialPuzzle, puzzle, matchId, socket]);
 
-  // Keyboard navigation
+  /* ── Keyboard ── */
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (gameState !== "playing") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (gameState !== "playing" || selectedCell === null) return;
       const size = activeGridSizeRef.current;
-      const maxIndex = size * size - 1;
+      const max = size * size - 1;
 
-      if (selectedCell !== null) {
-        const validNums = size === 6 ? /^[1-6]$/ : /^[1-9]$/;
-        if (validNums.test(e.key)) {
-          handleInput(e.key);
-        } else if (e.key === "Backspace" || e.key === "Delete") {
-          handleInput("-");
-        } else if (e.key === "Escape") {
-          setSelectedCell(null);
-        } else {
-          let newIndex = selectedCell;
-          switch (e.key) {
-            case "ArrowUp": newIndex = selectedCell >= size ? selectedCell - size : selectedCell; break;
-            case "ArrowDown": newIndex = selectedCell <= maxIndex - size ? selectedCell + size : selectedCell; break;
-            case "ArrowLeft": newIndex = selectedCell % size !== 0 ? selectedCell - 1 : selectedCell; break;
-            case "ArrowRight": newIndex = selectedCell % size !== size - 1 ? selectedCell + 1 : selectedCell; break;
-          }
-          if (newIndex !== selectedCell) setSelectedCell(newIndex);
-        }
-      }
+      const validN = size === 6 ? /^[1-6]$/ : /^[1-9]$/;
+      if (validN.test(e.key)) { handleInput(e.key); return; }
+      if (e.key === "Backspace" || e.key === "Delete") { handleInput("-"); return; }
+      if (e.key === "Escape") { setSelectedCell(null); return; }
+
+      let ni = selectedCell;
+      if (e.key === "ArrowUp") ni = selectedCell >= size ? selectedCell - size : selectedCell;
+      if (e.key === "ArrowDown") ni = selectedCell <= max - size ? selectedCell + size : selectedCell;
+      if (e.key === "ArrowLeft") ni = selectedCell % size !== 0 ? selectedCell - 1 : selectedCell;
+      if (e.key === "ArrowRight") ni = selectedCell % size !== size - 1 ? selectedCell + 1 : selectedCell;
+      if (ni !== selectedCell) { e.preventDefault(); setSelectedCell(ni); }
     };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, [selectedCell, gameState, handleInput]);
 
-  const findMatch = () => {
-    if (socket) {
-      socket.emit("findMatch", { mode: gridMode });
-    }
-  };
+  /* ── Find match ── */
+  const findMatch = () => socket?.emit("findMatch", { mode: gridMode });
+
+  /* ── Format elapsed seconds as MM:SS ── */
+  const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 
   const isWinner = winner === socket?.id;
-
-  // Numpad depends on active grid size during match, or selected mode on idle
-  const numpadDigits = activeGridSize === 6
-    ? ["1", "2", "3", "4", "5", "6"]
-    : ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
-
-  // Grid-size-specific CSS class
+  const numpadNums = activeGridSize === 6 ? ["1", "2", "3", "4", "5", "6"] : ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
   const gridClass = activeGridSize === 6 ? "sudoku-grid grid-6" : "sudoku-grid";
+  const numpadClass = activeGridSize === 6 ? "numpad numpad-6" : "numpad";
+  const eraseSpan = activeGridSize === 6 ? "col-span-6" : "col-span-9";
+
+  const myPct = totalEmpty ? Math.min(100, Math.max(0, (myFilled / totalEmpty) * 100)) : 0;
+  const oppPct = totalEmpty ? Math.min(100, Math.max(0, (opponentFilled / totalEmpty) * 100)) : 0;
 
   return (
-    <main className="flex flex-col items-center justify-center p-4 min-h-screen">
+    <main>
 
-      {/* ── IDLE: Mode Selection ── */}
+      {/* ── IDLE ── */}
       {gameState === "idle" && (
-        <div className="glass-panel text-center p-10 mt-12 animate-slide-up flex flex-col items-center max-w-lg w-full">
-          <Trophy size={60} className="text-blue-500 mb-5 drop-shadow-[0_0_15px_rgba(59,130,246,0.5)]" />
-          <h1 className="text-4xl font-extrabold mb-3 bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-indigo-500 pb-1">
-            Sudoku Race
-          </h1>
-          <p className="text-slate-400 mb-8 leading-relaxed">
-            Face off 1v1. Same puzzle, independent solving. First to finish wins!
+        <div className="glass-panel idle-card animate-slide-up">
+          <Trophy size={56} className="idle-icon" />
+          <h1 className="idle-title">Sudoku Race</h1>
+          <p className="idle-desc">
+            Face off 1v1 — both players get the same puzzle. First to
+            completely and correctly fill the board wins!
           </p>
 
-          {/* Mode Picker */}
-          <div className="w-full mb-8">
-            <p className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-3">
-              Choose Board Size
-            </p>
+          {/* Mode selection */}
+          <div className="mode-section">
+            <p className="mode-label">Choose Board Size</p>
             <div className="mode-picker">
               <button
                 id="mode-6x6"
                 className={`mode-card ${gridMode === "6" ? "active" : ""}`}
                 onClick={() => setGridMode("6")}
               >
-                <LayoutGrid size={36} className={gridMode === "6" ? "text-blue-400" : "text-slate-500"} />
+                <LayoutGrid size={34} className="mode-card-icon" />
                 <div className="mode-card-title">6 × 6</div>
                 <div className="mode-card-sub">Quick &amp; Fun</div>
                 <div className="mode-card-badge">Beginner</div>
@@ -178,7 +186,7 @@ export default function Home() {
                 className={`mode-card ${gridMode === "9" ? "active" : ""}`}
                 onClick={() => setGridMode("9")}
               >
-                <Grid3X3 size={36} className={gridMode === "9" ? "text-blue-400" : "text-slate-500"} />
+                <Grid3X3 size={34} className="mode-card-icon" />
                 <div className="mode-card-title">9 × 9</div>
                 <div className="mode-card-sub">Classic Challenge</div>
                 <div className="mode-card-badge">Standard</div>
@@ -186,12 +194,8 @@ export default function Home() {
             </div>
           </div>
 
-          <button
-            id="find-match-btn"
-            className="btn text-lg px-8 py-4 w-full justify-center shadow-[0_0_30px_rgba(37,99,235,0.4)] hover:shadow-[0_0_40px_rgba(37,99,235,0.6)]"
-            onClick={findMatch}
-          >
-            <Swords size={22} />
+          <button id="find-match-btn" className="btn" onClick={findMatch}>
+            <Swords size={20} />
             Find {gridMode}×{gridMode} Match
           </button>
         </div>
@@ -199,14 +203,14 @@ export default function Home() {
 
       {/* ── WAITING ── */}
       {gameState === "waiting" && (
-        <div className="glass-panel text-center p-12 mt-20 animate-slide-up">
-          <div className="pulse inline-flex items-center justify-center w-20 h-20 rounded-full bg-slate-800/50 border border-slate-700 mb-6">
-            <Swords size={32} className="text-slate-400" />
+        <div className="glass-panel waiting-card animate-slide-up">
+          <div className="waiting-icon-wrap">
+            <Swords size={30} style={{ color: "#94a3b8" }} />
           </div>
-          <h2 className="text-2xl font-bold mb-2">Looking for Opponent</h2>
-          <p className="text-slate-400 mb-1">Mode: <span className="text-blue-400 font-semibold">{gridMode}×{gridMode}</span></p>
-          <p className="text-slate-500 text-sm">Waiting for a worthy adversary…</p>
-          <button className="btn mt-6 text-sm px-6 py-2 !bg-slate-700 hover:!bg-slate-600 !shadow-none" onClick={() => setGameState("idle")}>
+          <h2 className="waiting-title">Looking for Opponent</h2>
+          <p className="waiting-mode">Mode: <strong>{gridMode}×{gridMode}</strong></p>
+          <p className="waiting-sub">Waiting for a worthy adversary…</p>
+          <button className="btn btn-cancel" onClick={() => setGameState("idle")}>
             Cancel
           </button>
         </div>
@@ -216,95 +220,90 @@ export default function Home() {
       {(gameState === "playing" || gameState === "finished") && (
         <div className="sudoku-container animate-slide-up">
 
-          {/* Header */}
+          {/* Match header */}
           <div className="match-header">
-            <div className="player-info w-2/5">
+            {/* You */}
+            <div className="player-info">
               <div className="player-name">You</div>
-              <div className="flex flex-col w-full">
-                <div className="flex justify-between text-sm mb-1 text-slate-300">
-                  <span>Progress</span>
-                  <span className="font-mono text-blue-400">{myFilled} / {totalEmpty}</span>
-                </div>
-                <div className="progress-bar-container">
-                  <div className="progress-bar" style={{ width: `${Math.min(100, Math.max(0, totalEmpty ? (myFilled / totalEmpty) * 100 : 0))}%` }}></div>
-                </div>
+              <div className="progress-row">
+                <span>Progress</span>
+                <span className="progress-count-you">{myFilled}/{totalEmpty}</span>
+              </div>
+              <div className="progress-bar-container">
+                <div className="progress-bar progress-bar-you" style={{ width: `${myPct}%` }} />
               </div>
             </div>
 
-            <div className="flex flex-col items-center gap-1">
+            {/* VS / Timer */}
+            <div className="vs-block">
               <div className="vs-badge">VS</div>
-              <div className="text-xs text-slate-500 font-mono">{activeGridSize}×{activeGridSize}</div>
+              <div className="match-timer">{fmt(elapsed)}</div>
+              <div className="vs-grid-size">{activeGridSize}×{activeGridSize}</div>
             </div>
 
-            <div className="player-info w-2/5 items-end text-right">
+            {/* Opponent */}
+            <div className="player-info" style={{ textAlign: "right" }}>
               <div className="player-name">Opponent</div>
-              <div className="flex flex-col w-full">
-                <div className="flex justify-between text-sm mb-1 text-slate-300">
-                  <span className="font-mono text-red-400">{opponentFilled} / {totalEmpty}</span>
-                  <span>Progress</span>
-                </div>
-                <div className="progress-bar-container">
-                  <div className="progress-bar opponent" style={{ float: "right", width: `${Math.min(100, Math.max(0, totalEmpty ? (opponentFilled / totalEmpty) * 100 : 0))}%` }}></div>
-                </div>
+              <div className="progress-row">
+                <span className="progress-count-opp">{opponentFilled}/{totalEmpty}</span>
+                <span>Progress</span>
+              </div>
+              <div className="progress-bar-container">
+                <div className="progress-bar progress-bar-opp" style={{ width: `${oppPct}%` }} />
               </div>
             </div>
           </div>
 
-          {/* Grid */}
+          {/* Sudoku grid */}
           <div className={gridClass}>
-            {puzzle.map((val, idx) => {
-              const isFixed = initialPuzzle[idx] !== "-";
-              const isSelected = selectedCell === idx;
-              return (
-                <div
-                  key={idx}
-                  className={`cell ${isFixed ? "fixed" : "input"} ${isSelected ? "selected" : ""}`}
-                  onClick={() => handleCellClick(idx)}
-                >
-                  {val === "-" ? "" : val}
-                </div>
-              );
-            })}
+            {puzzle.map((val, idx) => (
+              <div
+                key={idx}
+                className={`cell ${initialPuzzle[idx] !== "-" ? "fixed" : "input"} ${selectedCell === idx ? "selected" : ""}`}
+                onClick={() => handleCellClick(idx)}
+              >
+                {val === "-" ? "" : val}
+              </div>
+            ))}
           </div>
 
           {/* Numpad */}
-          <div className={`numpad ${activeGridSize === 6 ? "numpad-6" : ""}`}>
-            {numpadDigits.map((num) => (
-              <button key={num} className="numpad-btn" onClick={() => handleInput(num)}>
-                {num}
+          <div className={numpadClass}>
+            {numpadNums.map(n => (
+              <button key={n} className="numpad-btn" onClick={() => handleInput(n)}>
+                {n}
               </button>
             ))}
-            <button
-              className={`numpad-btn erase-btn ${activeGridSize === 6 ? "col-span-6" : "col-span-9"}`}
-              onClick={() => handleInput("-")}
-            >
+            <button className={`numpad-btn erase-btn ${eraseSpan}`} onClick={() => handleInput("-")}>
               Erase Cell
             </button>
           </div>
         </div>
       )}
 
-      {/* ── GAME OVER OVERLAY ── */}
+      {/* ── GAME OVER ── */}
       <div className={`game-over-overlay ${gameState === "finished" ? "visible" : ""}`}>
         {gameState === "finished" && (
           <div className="glass-panel game-over-card">
-            {isWinner ? (
-              <Trophy size={64} className="mx-auto text-emerald-400 mb-6 drop-shadow-[0_0_15px_rgba(16,185,129,0.5)]" />
-            ) : (
-              <XCircle size={64} className="mx-auto text-red-400 mb-6 drop-shadow-[0_0_15px_rgba(239,68,68,0.5)]" />
-            )}
+            <div className="game-over-icon">
+              {isWinner
+                ? <Trophy size={60} style={{ color: "#34d399", filter: "drop-shadow(0 0 14px rgba(16,185,129,0.5))" }} />
+                : <XCircle size={60} style={{ color: "#f87171", filter: "drop-shadow(0 0 14px rgba(239,68,68,0.5))" }} />
+              }
+            </div>
             <h2 className={`game-over-title ${isWinner ? "win" : "lose"}`}>
               {isWinner ? "Victory!" : "Defeat"}
             </h2>
             <p className="game-over-desc">
-              {winReason === "opponent_disconnected" ? (
-                <span className="flex items-center justify-center gap-2">
-                  <AlertTriangle size={18} className="text-yellow-500" /> Your opponent fled the match.
-                </span>
-              ) : isWinner ? "You solved the puzzle first!" : "Your opponent finished before you."}
+              {winReason === "opponent_disconnected"
+                ? <><AlertTriangle size={18} style={{ color: "#f59e0b" }} /> Your opponent fled the match.</>
+                : isWinner
+                  ? "You solved the puzzle first! 🎉"
+                  : "Your opponent finished before you."
+              }
             </p>
-            <button className="btn w-full justify-center" onClick={() => { setGameState("idle"); setActiveGridSize(9); }}>
-              <RotateCcw size={20} />
+            <button className="btn" onClick={() => { setGameState("idle"); setActiveGridSize(9); setElapsed(0); }}>
+              <RotateCcw size={18} />
               Play Again
             </button>
           </div>
