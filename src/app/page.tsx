@@ -38,6 +38,13 @@ export default function Home() {
   const [elapsed, setElapsed] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Lobby stats
+  const [lobbyStats, setLobbyStats] = useState({
+    activeMatches: 0,
+    waitingPlayers: 0,
+    liveMatches: [] as { id: string, mode: string, p1Progress: number, p2Progress: number }[]
+  });
+
   const startTimer = () => {
     if (timerRef.current) clearInterval(timerRef.current);
     setElapsed(0);
@@ -57,6 +64,10 @@ export default function Home() {
     setSocket(s);
 
     s.on("waiting", () => setGameState("waiting"));
+
+    s.on("lobbyStats", (stats: any) => {
+      setLobbyStats(stats);
+    });
 
     s.on("matchFound", (data: { matchId: string; puzzle: string; mode: GridMode }) => {
       const gs = parseInt(data.mode) as 6 | 9;
@@ -216,6 +227,49 @@ export default function Home() {
             <Swords size={20} />
             Find {gridMode}×{gridMode} Match
           </button>
+
+          {/* Live Lobby Stats */}
+          <div className="lobby-stats">
+            <div className="stat-pill">
+              <span className="stat-dot pulse-dot"></span>
+              <strong>{lobbyStats.activeMatches}</strong> Live Games
+            </div>
+            <div className="stat-pill">
+              <span className="stat-dot wait-dot"></span>
+              <strong>{lobbyStats.waitingPlayers}</strong> Waiting
+            </div>
+          </div>
+
+          {/* Ongoing Matches List */}
+          {lobbyStats.liveMatches.length > 0 && (
+            <div className="live-matches-section">
+              <h3 className="live-matches-title">Ongoing Matches</h3>
+              <div className="live-matches-list">
+                {lobbyStats.liveMatches.map((m: any) => (
+                  <div key={m.id} className="live-match-item">
+                    <div className="match-mode-tag">{m.mode}×{m.mode}</div>
+                    <div className="match-progress-bars">
+                      <div className="mini-progress-row">
+                        <span className="mini-label">P1</span>
+                        <div className="mini-bar-bg">
+                          <div className="mini-bar-fill" style={{ width: `${m.p1Progress}%` }} />
+                        </div>
+                        <span className="mini-pct">{m.p1Progress}%</span>
+                      </div>
+                      <div className="mini-progress-row">
+                        <span className="mini-label">P2</span>
+                        <div className="mini-bar-bg">
+                          <div className="mini-bar-fill opp" style={{ width: `${m.p2Progress}%` }} />
+                        </div>
+                        <span className="mini-pct">{m.p2Progress}%</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
         </div>
       )}
 

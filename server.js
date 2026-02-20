@@ -98,6 +98,36 @@ app.prepare().then(() => {
   io.on("connection", (socket) => {
     console.log("Client connected:", socket.id);
 
+    function broadcastLobbyStats() {
+      const activeMatchCount = matches.size;
+      const waitingCount = waitingQueues["6"].length + waitingQueues["9"].length;
+
+      const liveMatches = [];
+      for (const [id, m] of matches.entries()) {
+        if (m.status === "playing") {
+          const totalToFill = m.puzzle.length - m.initialFilled;
+          const p1Filled = m.p1.progress.filter(c => c !== "-").length - m.initialFilled;
+          const p2Filled = m.p2.progress.filter(c => c !== "-").length - m.initialFilled;
+
+          liveMatches.push({
+            id,
+            mode: m.mode,
+            p1Progress: totalToFill > 0 ? Math.floor((p1Filled / totalToFill) * 100) : 0,
+            p2Progress: totalToFill > 0 ? Math.floor((p2Filled / totalToFill) * 100) : 0,
+          });
+        }
+      }
+
+      io.emit("lobbyStats", {
+        activeMatches: activeMatchCount,
+        waitingPlayers: waitingCount,
+        liveMatches
+      });
+    }
+
+    // Send initial stats on connect
+    broadcastLobbyStats();
+
     socket.on("findMatch", ({ mode } = {}) => {
       const gridMode = mode === "6" ? "6" : "9"; // default 9
       console.log(socket.id, "finding match mode:", gridMode);
@@ -136,9 +166,11 @@ app.prepare().then(() => {
         socket.emit("matchFound", { matchId, puzzle, mode: gridMode, player: "p2" });
 
         console.log("Match created", matchId, "mode:", gridMode);
+        broadcastLobbyStats();
       } else {
         queue.push(socket.id);
         socket.emit("waiting", { mode: gridMode });
+        broadcastLobbyStats();
       }
     });
 
@@ -158,15 +190,17 @@ app.prepare().then(() => {
         match.status = "finished";
         io.to(matchId).emit("gameOver", { winner: socket.id, reason: "solved" });
         matches.delete(matchId);
+        broadcastLobbyStats();
       } else {
         const cellsFilled = player.progress.filter(x => x !== "-").length;
         io.to(matchId).emit("playerProgress", {
           playerId: socket.id,
           filled: cellsFilled,
           initialFilled: match.initialFilled,
-          cellIndex: index,          // which cell changed
-          cleared: !value,           // true if the player erased the cell
+          cellIndex: index,
+          cleared: !value,
         });
+        broadcastLobbyStats();
       }
     });
 
@@ -177,10 +211,14 @@ app.prepare().then(() => {
     });
 
     function handleLeave(socketId) {
+      let statsChanged = false;
       // Remove from any waiting queue
       for (const q of Object.values(waitingQueues)) {
         const i = q.indexOf(socketId);
-        if (i !== -1) q.splice(i, 1);
+        if (i !== -1) {
+          q.splice(i, 1);
+          statsChanged = true;
+        }
       }
       // Check active matches
       for (const [matchId, match] of matches.entries()) {
@@ -190,9 +228,11 @@ app.prepare().then(() => {
             match.status = "finished";
             io.to(matchId).emit("gameOver", { winner: winnerId, reason: "opponent_disconnected" });
             matches.delete(matchId);
+            statsChanged = true;
           }
         }
       }
+      if (statsChanged) broadcastLobbyStats();
     }
   });
 
