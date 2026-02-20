@@ -164,6 +164,8 @@ app.prepare().then(() => {
           playerId: socket.id,
           filled: cellsFilled,
           initialFilled: match.initialFilled,
+          cellIndex: index,          // which cell changed
+          cleared: !value,           // true if the player erased the cell
         });
       }
     });

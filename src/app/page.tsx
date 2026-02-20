@@ -23,6 +23,10 @@ export default function Home() {
   const [opponentFilled, setOpponentFilled] = useState(0);
   const [totalEmpty, setTotalEmpty] = useState(0);
 
+  // Opponent cell-level tracking (which indices the opponent has answered)
+  const [opponentCells, setOpponentCells] = useState<Set<number>>(new Set<number>());
+
+
   // Result
   const [winner, setWinner] = useState<string | null>(null);
   const [winReason, setWinReason] = useState("");
@@ -67,15 +71,29 @@ export default function Home() {
       setTotalEmpty(empty);
       setMyFilled(0);
       setOpponentFilled(0);
+      setOpponentCells(new Set());
       setGameState("playing");
       startTimer();
       setWinner(null);
       setSelectedCell(null);
     });
 
-    s.on("playerProgress", (data: { playerId: string; filled: number; initialFilled: number }) => {
+    s.on("playerProgress", (data: {
+      playerId: string;
+      filled: number;
+      initialFilled: number;
+      cellIndex: number;
+      cleared: boolean;
+    }) => {
       if (data.playerId !== s.id) {
         setOpponentFilled(data.filled - data.initialFilled);
+        // Update the set of cells the opponent has answered
+        setOpponentCells(prev => {
+          const next = new Set(prev);
+          if (data.cleared) next.delete(data.cellIndex);
+          else next.add(data.cellIndex);
+          return next;
+        });
       }
     });
 
@@ -256,15 +274,21 @@ export default function Home() {
 
           {/* Sudoku grid */}
           <div className={gridClass}>
-            {puzzle.map((val, idx) => (
-              <div
-                key={idx}
-                className={`cell ${initialPuzzle[idx] !== "-" ? "fixed" : "input"} ${selectedCell === idx ? "selected" : ""}`}
-                onClick={() => handleCellClick(idx)}
-              >
-                {val === "-" ? "" : val}
-              </div>
-            ))}
+            {puzzle.map((val, idx) => {
+              const isFixed = initialPuzzle[idx] !== "-";
+              const isSelected = selectedCell === idx;
+              // Show opponent indicator on cells the opponent has filled
+              const hasOppFill = !isFixed && opponentCells.has(idx);
+              return (
+                <div
+                  key={idx}
+                  className={`cell ${isFixed ? "fixed" : "input"} ${isSelected ? "selected" : ""} ${hasOppFill ? "opp-filled" : ""}`}
+                  onClick={() => handleCellClick(idx)}
+                >
+                  {val === "-" ? "" : val}
+                </div>
+              );
+            })}
           </div>
 
           {/* Numpad */}
