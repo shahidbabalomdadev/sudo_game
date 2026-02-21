@@ -96,7 +96,13 @@ app.prepare().then(() => {
 
     function broadcastLobbyStats() {
       const activeMatchCount = matches.size;
-      const waitingCount = waitingQueues["6"].length + waitingQueues["9"].length;
+      const waitingByMode = {
+        "4": waitingQueues["4"].length,
+        "6": waitingQueues["6"].length,
+        "9": waitingQueues["9"].length,
+        "9expert": waitingQueues["9expert"].length,
+      };
+      const totalWaiting = Object.values(waitingByMode).reduce((a, b) => a + b, 0);
 
       const liveMatches = [];
       for (const [id, m] of matches.entries()) {
@@ -116,7 +122,8 @@ app.prepare().then(() => {
 
       io.emit("lobbyStats", {
         activeMatches: activeMatchCount,
-        waitingPlayers: waitingCount,
+        waitingPlayers: totalWaiting,
+        waitingByMode,
         liveMatches
       });
     }
@@ -124,17 +131,23 @@ app.prepare().then(() => {
     // Send initial stats on connect
     broadcastLobbyStats();
 
-    socket.on("findMatch", ({ mode } = {}) => {
+    socket.on("findMatch", ({ mode, name, playerId } = {}) => {
       // Validate mode, default to 9
       const gridMode = ["4", "6", "9", "9expert"].includes(mode) ? mode : "9";
-      console.log(socket.id, "finding match mode:", gridMode);
+      const playerName = name || "Anonymous";
+      const pid = playerId || socket.id; // Fallback to socket id if no persistent pid
+      console.log(socket.id, "finding match mode:", gridMode, "as:", playerName, "(", pid, ")");
 
       const queue = waitingQueues[gridMode];
 
       if (queue.length > 0) {
-        const opponentId = queue.pop();
-        if (opponentId === socket.id) {
-          queue.push(socket.id);
+        const opponent = queue.pop();
+        const opponentId = opponent.id; // socket id
+        const opponentPid = opponent.pid; // persistent id
+        const opponentName = opponent.name;
+
+        if (opponentPid === pid) {
+          queue.push({ id: socket.id, pid, name: playerName });
           return;
         }
 
@@ -149,26 +162,80 @@ app.prepare().then(() => {
           puzzle,
           solution,
           initialFilled,
-          p1: { id: opponentId, progress: puzzle.split("") },
-          p2: { id: socket.id, progress: puzzle.split("") },
+          p1: { id: opponentId, pid: opponentPid, name: opponentName, progress: puzzle.split("") },
+          p2: { id: socket.id, pid: pid, name: playerName, progress: puzzle.split("") },
           status: "playing",
+          timeouts: {}
         });
 
         const opponentSocket = io.sockets.sockets.get(opponentId);
         if (opponentSocket) {
           opponentSocket.join(matchId);
-          opponentSocket.emit("matchFound", { matchId, puzzle, mode: gridMode, player: "p1" });
+          opponentSocket.emit("matchFound", {
+            matchId,
+            puzzle,
+            mode: gridMode,
+            player: "p1",
+            opponentName: playerName
+          });
         }
         socket.join(matchId);
-        socket.emit("matchFound", { matchId, puzzle, mode: gridMode, player: "p2" });
+        socket.emit("matchFound", {
+          matchId,
+          puzzle,
+          mode: gridMode,
+          player: "p2",
+          opponentName: opponentName
+        });
 
         console.log("Match created", matchId, "mode:", gridMode);
         broadcastLobbyStats();
       } else {
-        queue.push(socket.id);
+        queue.push({ id: socket.id, pid, name: playerName });
         socket.emit("waiting", { mode: gridMode });
         broadcastLobbyStats();
       }
+    });
+
+    socket.on("rejoinMatch", ({ matchId, playerId }) => {
+      const match = matches.get(matchId);
+      if (!match) {
+        socket.emit("error", { message: "Match not found or expired" });
+        return;
+      }
+
+      // Find which player is rejoining by PID
+      const playerKey = match.p1.pid === playerId ? "p1" : match.p2.pid === playerId ? "p2" : null;
+      if (!playerKey) {
+        socket.emit("error", { message: "Not a participant in this match" });
+        return;
+      }
+
+      const player = match[playerKey];
+      const opponentKey = playerKey === "p1" ? "p2" : "p1";
+      const opponent = match[opponentKey];
+
+      // Update socket ID and clear any disconnect timeout
+      player.id = socket.id;
+      if (match.timeouts && match.timeouts[playerKey]) {
+        clearTimeout(match.timeouts[playerKey]);
+        delete match.timeouts[playerKey];
+      }
+
+      socket.join(matchId);
+      socket.emit("matchFound", {
+        matchId,
+        puzzle: match.puzzle,
+        mode: match.mode,
+        player: playerKey,
+        opponentName: opponent.name,
+        // Send current progress to client
+        currentProgress: player.progress,
+        opponentFilled: opponent.progress.filter(x => x !== "-").length - match.initialFilled
+      });
+
+      console.log(`Player ${player.name} (${playerId}) rejoined ${matchId}`);
+      broadcastLobbyStats();
     });
 
     socket.on("makeMove", ({ matchId, index, value }) => {
@@ -185,7 +252,11 @@ app.prepare().then(() => {
 
       if (isComplete) {
         match.status = "finished";
-        io.to(matchId).emit("gameOver", { winner: socket.id, reason: "solved" });
+        io.to(matchId).emit("gameOver", {
+          winner: socket.id,
+          winnerName: player.name,
+          reason: "solved"
+        });
         matches.delete(matchId);
         broadcastLobbyStats();
       } else {
@@ -201,35 +272,63 @@ app.prepare().then(() => {
       }
     });
 
-    socket.on("leaveMatch", () => handleLeave(socket.id));
+    socket.on("leaveMatch", () => handleLeave(socket.id, true));
     socket.on("disconnect", () => {
       console.log("Client disconnected:", socket.id);
-      handleLeave(socket.id);
+      handleLeave(socket.id, false); // false means "might reconnect"
     });
 
-    function handleLeave(socketId) {
+    function handleLeave(socketId, immediate = false) {
       let statsChanged = false;
       // Remove from any waiting queue
       for (const q of Object.values(waitingQueues)) {
-        const i = q.indexOf(socketId);
+        const i = q.findIndex(p => p.id === socketId);
         if (i !== -1) {
           q.splice(i, 1);
           statsChanged = true;
         }
       }
+
       // Check active matches
       for (const [matchId, match] of matches.entries()) {
-        if (match.p1.id === socketId || match.p2.id === socketId) {
+        const p1 = match.p1;
+        const p2 = match.p2;
+
+        if (p1.id === socketId || p2.id === socketId) {
           if (match.status === "playing") {
-            const winnerId = match.p1.id === socketId ? match.p2.id : match.p1.id;
-            match.status = "finished";
-            io.to(matchId).emit("gameOver", { winner: winnerId, reason: "opponent_disconnected" });
-            matches.delete(matchId);
-            statsChanged = true;
+            const playerKey = p1.id === socketId ? "p1" : "p2";
+
+            if (immediate) {
+              const winnerKey = playerKey === "p1" ? "p2" : "p1";
+              finishMatch(matchId, match, winnerKey, "opponent_disconnected");
+              statsChanged = true;
+            } else {
+              // Disconnect: start grace period
+              if (!match.timeouts) match.timeouts = {};
+              match.timeouts[playerKey] = setTimeout(() => {
+                const updatedMatch = matches.get(matchId);
+                if (updatedMatch && updatedMatch.status === "playing") {
+                  const winnerKey = playerKey === "p1" ? "p2" : "p1";
+                  finishMatch(matchId, updatedMatch, winnerKey, "opponent_disconnected");
+                  broadcastLobbyStats();
+                }
+              }, 10000); // 10s grace period
+            }
           }
         }
       }
       if (statsChanged) broadcastLobbyStats();
+    }
+
+    function finishMatch(matchId, match, winnerKey, reason) {
+      const winner = match[winnerKey];
+      match.status = "finished";
+      io.to(matchId).emit("gameOver", {
+        winner: winner.id,
+        winnerName: winner.name,
+        reason: reason
+      });
+      matches.delete(matchId);
     }
   });
 

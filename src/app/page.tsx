@@ -3,13 +3,28 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { io, Socket } from "socket.io-client";
 import {
   Trophy, Swords, XCircle, RotateCcw,
-  AlertTriangle, Grid3X3, LayoutGrid
+  Grid3X3, LayoutGrid
 } from "lucide-react";
 
 type GridMode = "4" | "6" | "9" | "9expert";
 
+interface MatchStat {
+  id: string;
+  mode: string;
+  p1Progress: number;
+  p2Progress: number;
+}
+
+interface LobbyStats {
+  activeMatches: number;
+  waitingPlayers: number;
+  waitingByMode: Record<string, number>;
+  liveMatches: MatchStat[];
+}
+
 export default function Home() {
   const [socket, setSocket] = useState<Socket | null>(null);
+  const [mounted, setMounted] = useState(false);
   const [gameState, setGameState] = useState<"idle" | "waiting" | "playing" | "finished">("idle");
   const [gridMode, setGridMode] = useState<GridMode>("9");
   const [matchId, setMatchId] = useState("");
@@ -29,7 +44,12 @@ export default function Home() {
 
   // Result
   const [winner, setWinner] = useState<string | null>(null);
+  const [winnerName, setWinnerName] = useState("");
   const [winReason, setWinReason] = useState("");
+
+  const [playerName, setPlayerName] = useState("Player");
+  const [opponentName, setOpponentName] = useState("Opponent");
+  const [playerId, setPlayerId] = useState("");
 
   const totalEmptyRef = useRef(0);
   const activeGridSizeRef = useRef(9);
@@ -39,21 +59,73 @@ export default function Home() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Lobby stats
-  const [lobbyStats, setLobbyStats] = useState({
+  const [lobbyStats, setLobbyStats] = useState<LobbyStats>({
     activeMatches: 0,
     waitingPlayers: 0,
-    liveMatches: [] as { id: string, mode: string, p1Progress: number, p2Progress: number }[]
+    waitingByMode: {},
+    liveMatches: []
   });
 
-  const startTimer = () => {
+  const startTimer = (resumeTime?: number) => {
     if (timerRef.current) clearInterval(timerRef.current);
-    setElapsed(0);
-    timerRef.current = setInterval(() => setElapsed(s => s + 1), 1000);
+    if (resumeTime !== undefined) setElapsed(resumeTime);
+    else setElapsed(0);
+    timerRef.current = setInterval(() => setElapsed((s: number) => s + 1), 1000);
   };
 
   const stopTimer = () => {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
   };
+
+  // Identity & Persist Name + Restore session
+  useEffect(() => {
+    setMounted(true);
+    const savedPid = localStorage.getItem("sudoku_pid") || Math.random().toString(36).substr(2, 9);
+    localStorage.setItem("sudoku_pid", savedPid);
+    setPlayerId(savedPid);
+
+    const savedName = localStorage.getItem("sudoku_name");
+    if (savedName) setPlayerName(savedName);
+
+    // Restore state from sessionStorage
+    const savedState = sessionStorage.getItem("sudoku_tab_state");
+    if (savedState) {
+      const parsed = JSON.parse(savedState);
+      setGameState(parsed.gameState);
+      setGridMode(parsed.gridMode);
+      setMatchId(parsed.matchId);
+      setPuzzle(parsed.puzzle);
+      setInitialPuzzle(parsed.initialPuzzle);
+      setActiveGridSize(parsed.activeGridSize);
+      setMyFilled(parsed.myFilled);
+      setOpponentFilled(parsed.opponentFilled);
+      setTotalEmpty(parsed.totalEmpty);
+      setOpponentCells(new Set(parsed.opponentCells));
+      setOpponentName(parsed.opponentName);
+      totalEmptyRef.current = parsed.totalEmpty;
+      activeGridSizeRef.current = parsed.activeGridSize;
+      setElapsed(parsed.elapsed);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (playerName !== "Player") localStorage.setItem("sudoku_name", playerName);
+  }, [playerName]);
+
+  // Persist Match State (Tab-based)
+  useEffect(() => {
+    if (gameState === "playing" || gameState === "finished") {
+      const state = {
+        gameState, matchId, gridMode, puzzle, initialPuzzle, opponentName,
+        activeGridSize, elapsed, opponentFilled, totalEmpty, myFilled,
+        opponentCells: Array.from(opponentCells)
+      };
+      sessionStorage.setItem("sudoku_tab_state", JSON.stringify(state));
+    } else if (gameState === "idle") {
+      sessionStorage.removeItem("sudoku_tab_state");
+    }
+  }, [gameState, matchId, gridMode, puzzle, initialPuzzle, opponentName, activeGridSize, elapsed, opponentFilled, totalEmpty, opponentCells, myFilled]);
+
 
   // Clean up on unmount
   useEffect(() => () => stopTimer(), []);
@@ -65,11 +137,32 @@ export default function Home() {
 
     s.on("waiting", () => setGameState("waiting"));
 
-    s.on("lobbyStats", (stats: any) => {
+    // Handle Rejoin Restore
+    const saved = sessionStorage.getItem("sudoku_tab_state");
+    if (saved) {
+      const data = JSON.parse(saved);
+      const pid = localStorage.getItem("sudoku_pid");
+      if (data.matchId && pid) {
+        s.emit("rejoinMatch", { matchId: data.matchId, playerId: pid });
+      }
+    }
+
+    s.on("lobbyStats", (stats: LobbyStats) => {
       setLobbyStats(stats);
     });
 
-    s.on("matchFound", (data: { matchId: string; puzzle: string; mode: GridMode }) => {
+    s.on("error", (data: { message: string }) => {
+      console.error("Match error:", data.message);
+      if (data.message.includes("not found")) {
+        setGameState("idle");
+        sessionStorage.removeItem("sudoku_tab_state");
+      }
+    });
+
+    s.on("matchFound", (data: {
+      matchId: string; puzzle: string; mode: GridMode; opponentName: string;
+      currentProgress?: string[]; opponentFilled?: number
+    }) => {
       // Map mode string to numeric size for the UI
       let gs: number = 9;
       if (data.mode === "4") gs = 4;
@@ -79,18 +172,42 @@ export default function Home() {
       activeGridSizeRef.current = gs;
       setActiveGridSize(gs);
       setMatchId(data.matchId);
+
       const arr = data.puzzle.split("");
-      setPuzzle([...arr]);
       setInitialPuzzle([...arr]);
+
+      // If rejoining, use currentProgress from server, otherwise use initial puzzle
+      if (data.currentProgress) {
+        setPuzzle([...data.currentProgress]);
+        setMyFilled(data.currentProgress.filter(c => c !== "-").length - arr.filter(c => c !== "-").length);
+      } else {
+        setPuzzle([...arr]);
+        setMyFilled(0);
+      }
+
       const empty = arr.filter(c => c === "-").length;
       totalEmptyRef.current = empty;
       setTotalEmpty(empty);
-      setMyFilled(0);
-      setOpponentFilled(0);
-      setOpponentCells(new Set());
+
+      setOpponentFilled(data.opponentFilled || 0);
+      setOpponentName(data.opponentName || "Opponent");
+
       setGameState("playing");
-      startTimer();
+
+      // Restore elapsed time and opponent cells if rejoining
+      let restoredElapsed = 0;
+      const saved = sessionStorage.getItem("sudoku_tab_state");
+      if (saved && data.currentProgress) {
+        const sd = JSON.parse(saved);
+        if (sd.matchId === data.matchId) {
+          restoredElapsed = sd.elapsed || 0;
+          setOpponentCells(new Set(sd.opponentCells || []));
+        }
+      }
+
+      startTimer(restoredElapsed);
       setWinner(null);
+      setWinnerName("");
       setSelectedCell(null);
     });
 
@@ -113,9 +230,10 @@ export default function Home() {
       }
     });
 
-    s.on("gameOver", (data: { winner: string; reason: string }) => {
+    s.on("gameOver", (data: { winner: string; winnerName: string; reason: string }) => {
       stopTimer();
       setWinner(data.winner);
+      setWinnerName(data.winnerName);
       setWinReason(data.reason);
       setGameState("finished");
     });
@@ -173,7 +291,11 @@ export default function Home() {
   }, [selectedCell, gameState, handleInput]);
 
   /* ── Find match ── */
-  const findMatch = () => socket?.emit("findMatch", { mode: gridMode });
+  const findMatch = () => socket?.emit("findMatch", {
+    mode: gridMode,
+    name: playerName,
+    playerId: playerId
+  });
 
   /* ── Format elapsed seconds as MM:SS ── */
   const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
@@ -189,6 +311,8 @@ export default function Home() {
   const myPct = totalEmpty ? Math.min(100, Math.max(0, (myFilled / totalEmpty) * 100)) : 0;
   const oppPct = totalEmpty ? Math.min(100, Math.max(0, (opponentFilled / totalEmpty) * 100)) : 0;
 
+  if (!mounted) return <div />;
+
   return (
     <main>
 
@@ -197,6 +321,18 @@ export default function Home() {
         <div className="glass-panel idle-card animate-slide-up">
           <Trophy size={56} className="idle-icon" />
           <h1 className="idle-title">Sudoku Race</h1>
+
+          <div className="player-setup">
+            <p className="mode-label">Your Gaming Name</p>
+            <input
+              className="glass-input"
+              value={playerName}
+              onChange={(e) => setPlayerName(e.target.value)}
+              placeholder="Enter name..."
+              maxLength={15}
+            />
+          </div>
+
           <p className="idle-desc">
             Face off 1v1 — both players get the same puzzle. First to
             completely and correctly fill the board wins!
@@ -211,6 +347,9 @@ export default function Home() {
                 className={`mode-card ${gridMode === "4" ? "active" : ""}`}
                 onClick={() => setGridMode("4")}
               >
+                {lobbyStats.waitingByMode?.["4"] > 0 && (
+                  <div className="mode-waiting-badge">{lobbyStats.waitingByMode["4"]}</div>
+                )}
                 <div className="mode-card-icon-small">4×4</div>
                 <div className="mode-card-title">4 × 4</div>
                 <div className="mode-card-sub">Super Fast</div>
@@ -222,6 +361,9 @@ export default function Home() {
                 className={`mode-card ${gridMode === "6" ? "active" : ""}`}
                 onClick={() => setGridMode("6")}
               >
+                {lobbyStats.waitingByMode?.["6"] > 0 && (
+                  <div className="mode-waiting-badge">{lobbyStats.waitingByMode["6"]}</div>
+                )}
                 <LayoutGrid size={34} className="mode-card-icon" />
                 <div className="mode-card-title">6 × 6</div>
                 <div className="mode-card-sub">Quick &amp; Fun</div>
@@ -233,6 +375,9 @@ export default function Home() {
                 className={`mode-card ${gridMode === "9" ? "active" : ""}`}
                 onClick={() => setGridMode("9")}
               >
+                {lobbyStats.waitingByMode?.["9"] > 0 && (
+                  <div className="mode-waiting-badge">{lobbyStats.waitingByMode["9"]}</div>
+                )}
                 <Grid3X3 size={34} className="mode-card-icon" />
                 <div className="mode-card-title">9 × 9</div>
                 <div className="mode-card-sub">Classic Fun</div>
@@ -244,6 +389,9 @@ export default function Home() {
                 className={`mode-card ${gridMode === "9expert" ? "active" : ""}`}
                 onClick={() => setGridMode("9expert")}
               >
+                {lobbyStats.waitingByMode?.["9expert"] > 0 && (
+                  <div className="mode-waiting-badge gold">{lobbyStats.waitingByMode["9expert"]}</div>
+                )}
                 <Trophy size={34} className="mode-card-icon gold" />
                 <div className="mode-card-title">Pro</div>
                 <div className="mode-card-sub">Pure Chaos</div>
@@ -274,7 +422,7 @@ export default function Home() {
             <div className="live-matches-section">
               <h3 className="live-matches-title">Ongoing Matches</h3>
               <div className="live-matches-list">
-                {lobbyStats.liveMatches.map((m: any) => (
+                {lobbyStats.liveMatches.map((m: MatchStat) => (
                   <div key={m.id} className="live-match-item">
                     <div className="match-mode-tag">{m.mode}×{m.mode}</div>
                     <div className="match-progress-bars">
@@ -322,35 +470,39 @@ export default function Home() {
         <div className="sudoku-container animate-slide-up">
 
           {/* Match header */}
-          <div className="match-header">
+          <div className="match-header glass-panel">
             {/* You */}
             <div className="player-info">
-              <div className="player-name">You</div>
-              <div className="progress-row">
-                <span>Progress</span>
-                <span className="progress-count-you">{myFilled}/{totalEmpty}</span>
+              <div className="player-label-row">
+                <span className="player-label">YOU</span>
+                <span className="player-name-text">{playerName}</span>
               </div>
               <div className="progress-bar-container">
                 <div className="progress-bar progress-bar-you" style={{ width: `${myPct}%` }} />
+              </div>
+              <div className="progress-row">
+                <span className="progress-count-you">{myFilled}/{totalEmpty}</span>
               </div>
             </div>
 
             {/* VS / Timer */}
             <div className="vs-block">
-              <div className="vs-badge">VS</div>
               <div className="match-timer">{fmt(elapsed)}</div>
+              <div className="vs-badge">VS</div>
               <div className="vs-grid-size">{activeGridSize}×{activeGridSize}</div>
             </div>
 
             {/* Opponent */}
             <div className="player-info" style={{ textAlign: "right" }}>
-              <div className="player-name">Opponent</div>
-              <div className="progress-row">
-                <span className="progress-count-opp">{opponentFilled}/{totalEmpty}</span>
-                <span>Progress</span>
+              <div className="player-label-row opp">
+                <span className="player-name-text">{opponentName}</span>
+                <span className="player-label">OPP</span>
               </div>
               <div className="progress-bar-container">
                 <div className="progress-bar progress-bar-opp" style={{ width: `${oppPct}%` }} />
+              </div>
+              <div className="progress-row">
+                <span className="progress-count-opp">{opponentFilled}/{totalEmpty}</span>
               </div>
             </div>
           </div>
@@ -402,12 +554,17 @@ export default function Home() {
               {isWinner ? "Victory!" : "Defeat"}
             </h2>
             <p className="game-over-desc">
-              {winReason === "opponent_disconnected"
-                ? <><AlertTriangle size={18} style={{ color: "#f59e0b" }} /> Your opponent fled the match.</>
-                : isWinner
-                  ? "You solved the puzzle first! 🎉"
-                  : "Your opponent finished before you."
-              }
+              <span className="winner-announcement">
+                {winnerName} won the race!
+              </span>
+              <span className="reason-detail">
+                {winReason === "opponent_disconnected"
+                  ? "Opponent surrendered."
+                  : isWinner
+                    ? "You solved the puzzle first! 🎉"
+                    : "They were faster this time."
+                }
+              </span>
             </p>
             <button className="btn" onClick={() => { setGameState("idle"); setActiveGridSize(9); setElapsed(0); }}>
               <RotateCcw size={18} />
