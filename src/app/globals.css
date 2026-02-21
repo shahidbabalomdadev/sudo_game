@@ -931,12 +931,8 @@ main {
   color: #f87171;
 }
 
-.col-span-9 {
-  grid-column: span 9;
-}
-
-.col-span-6 {
-  grid-column: span 6;
+.col-span-full {
+  grid-column: 1 / -1;
 }
 
 /* ── Animations ──────────────────────────────────────────────────────── */

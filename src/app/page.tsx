@@ -89,22 +89,27 @@ export default function Home() {
 
     // Restore state from sessionStorage
     const savedState = sessionStorage.getItem("sudoku_tab_state");
-    if (savedState) {
-      const parsed = JSON.parse(savedState);
-      setGameState(parsed.gameState);
-      setGridMode(parsed.gridMode);
-      setMatchId(parsed.matchId);
-      setPuzzle(parsed.puzzle);
-      setInitialPuzzle(parsed.initialPuzzle);
-      setActiveGridSize(parsed.activeGridSize);
-      setMyFilled(parsed.myFilled);
-      setOpponentFilled(parsed.opponentFilled);
-      setTotalEmpty(parsed.totalEmpty);
-      setOpponentCells(new Set(parsed.opponentCells));
-      setOpponentName(parsed.opponentName);
-      totalEmptyRef.current = parsed.totalEmpty;
-      activeGridSizeRef.current = parsed.activeGridSize;
-      setElapsed(parsed.elapsed);
+    if (savedState && savedState.trim()) {
+      try {
+        const parsed = JSON.parse(savedState);
+        setGameState(parsed.gameState);
+        setGridMode(parsed.gridMode);
+        setMatchId(parsed.matchId);
+        setPuzzle(parsed.puzzle);
+        setInitialPuzzle(parsed.initialPuzzle);
+        setActiveGridSize(parsed.activeGridSize);
+        setMyFilled(parsed.myFilled);
+        setOpponentFilled(parsed.opponentFilled);
+        setTotalEmpty(parsed.totalEmpty);
+        setOpponentCells(new Set(parsed.opponentCells));
+        setOpponentName(parsed.opponentName);
+        totalEmptyRef.current = parsed.totalEmpty;
+        activeGridSizeRef.current = parsed.activeGridSize;
+        setElapsed(parsed.elapsed);
+      } catch (e) {
+        console.error("Failed to restore session state:", e);
+        sessionStorage.removeItem("sudoku_tab_state");
+      }
     }
   }, []);
 
@@ -139,11 +144,15 @@ export default function Home() {
 
     // Handle Rejoin Restore
     const saved = sessionStorage.getItem("sudoku_tab_state");
-    if (saved) {
-      const data = JSON.parse(saved);
-      const pid = localStorage.getItem("sudoku_pid");
-      if (data.matchId && pid) {
-        s.emit("rejoinMatch", { matchId: data.matchId, playerId: pid });
+    if (saved && saved.trim()) {
+      try {
+        const data = JSON.parse(saved);
+        const pid = localStorage.getItem("sudoku_pid");
+        if (data.matchId && pid) {
+          s.emit("rejoinMatch", { matchId: data.matchId, playerId: pid });
+        }
+      } catch (e) {
+        console.error("Failed to parse rejoin state:", e);
       }
     }
 
@@ -304,7 +313,6 @@ export default function Home() {
   const numpadNums = activeGridSize === 4 ? ["1", "2", "3", "4"] : activeGridSize === 6 ? ["1", "2", "3", "4", "5", "6"] : ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
   const gridClass = activeGridSize === 4 ? "sudoku-grid grid-4" : activeGridSize === 6 ? "sudoku-grid grid-6" : "sudoku-grid";
   const numpadClass = activeGridSize === 4 ? "numpad numpad-4" : activeGridSize === 6 ? "numpad numpad-6" : "numpad";
-  const eraseSpan = activeGridSize === 4 ? "col-span-4" : activeGridSize === 6 ? "col-span-6" : "col-span-9";
 
   const findMatchDisplay = gridMode === "9expert" ? "9×9 Expert" : `${gridMode}×${gridMode}`;
 
@@ -533,7 +541,7 @@ export default function Home() {
                 {n}
               </button>
             ))}
-            <button className={`numpad-btn erase-btn ${eraseSpan}`} onClick={() => handleInput("-")}>
+            <button className="numpad-btn erase-btn col-span-full" onClick={() => handleInput("-")}>
               Erase Cell
             </button>
           </div>
